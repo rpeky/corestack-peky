@@ -1,0 +1,14 @@
+Sun Jun 28 01:43:49 2026
+Started dspawn daemon [234647].
+Sun Jun 28 01:43:49 2026
+Logging dspawn daemon [234647] message: test.
+Sun Jun 28 01:43:49 2026
+Logging dspawn daemon [234647] message: one work cycle.
+Sun Jun 28 01:43:59 2026
+Logging dspawn daemon [234647] message: one work cycle.
+[aa] Spawned dplant daemon Sun Jun 28 01:43:59 2026
+ [PID=234654].
+Sun Jun 28 01:43:59 2026
+Logging dspawn daemon [234654] message: dplant daemon started.
+Sun Jun 28 01:43:59 2026
+Logging dspawn daemon [234654] message: Initializing new plant state.

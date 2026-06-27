@@ -1,0 +1,6 @@
+-std=c11
+-Iinclude
+-Iinclude/tetrish
+-D_GNU_SOURCE
+-Wall
+-Wextra

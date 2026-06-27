@@ -1,0 +1,12 @@
+# tetrish start-up file
+# Add one command per line; blank lines and # comments are ignored.
+
+alias cls='clear'
+
+alias ll="ls -l -a -h"
+alias py="python3"
+alias kms="exit"
+
+echo "Setting Backup Path"
+setenv BACKUP_DIR="./files"
+sys
