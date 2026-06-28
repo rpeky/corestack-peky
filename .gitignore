@@ -1,0 +1,12 @@
+build/
+bin/
+*.o
+*.d
+*.a
+*.so
+*.so.*
+*.out
+*.swp
+*.swo
+*.tmp
+*.bak

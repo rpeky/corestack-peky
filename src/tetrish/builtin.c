@@ -163,7 +163,7 @@ static int bi_usage(int argc, char **argv) {
 		puts("\t  dkill        [args...]      kill active daemons");
 		puts("\t  dplant <plant name>         spawn a plant daemon");
 		puts("\t  dplant <plant name> water   water plant daemon");
-		puts("\t  dplant <plant name> stats   statcheck plant daemon");
+		puts("\t  dplant <plant name> stats   statcheck plant daemon\n");
 		return 0;
 	}
 

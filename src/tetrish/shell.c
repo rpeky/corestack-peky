@@ -399,7 +399,7 @@ int main(void) {
 	cleanup_handlers();
 	startup();
 	// Print initial shell prompt
-	puts("Welcome to the speedran shell tetrishrc"); 
+	puts("Welcome to the speedran shell - peky"); 
 
 	char *argv[MAX_ARGS];
 	char prompt[IN_BUFFER];
