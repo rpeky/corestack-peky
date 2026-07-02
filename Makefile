@@ -40,6 +40,7 @@ fmt:
 clean:
 	rm -rf build
 	rm -rf bin
+	rm -rf tmp
 
 
 -include $(TETRISH_OBJS:.o=.d)

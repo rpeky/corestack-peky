@@ -529,15 +529,15 @@ void daemon_work(const char *name) {
 
 		// reduce every minute
 		if (seconds_passed >= 60) {
-			// plant.waterlevel -= seconds_passed / 60;
-			plant.waterlevel -= 101;
+			plant.waterlevel -= seconds_passed / 60 * 5;
+			// plant.waterlevel -= 101;
 			if (plant.waterlevel < 0)
 				plant.waterlevel = 0;
 
-			// if (plant.waterlevel == 0)
-			//         plant.health -= 5;
 			if (plant.waterlevel == 0)
-				plant.health -= 100;
+			        plant.health -= 5;
+			//if (plant.waterlevel == 0)
+			//	plant.health -= 100;
 			else if (plant.waterlevel > 80 && plant.health < 100)
 				plant.health += 1;
 
