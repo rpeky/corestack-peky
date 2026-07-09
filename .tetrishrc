@@ -10,3 +10,5 @@ alias kms="exit"
 echo "Setting Backup Path"
 setenv BACKUP_DIR="./files"
 sys
+
+setenv TETRISTCP="2234"
