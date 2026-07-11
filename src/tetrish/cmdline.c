@@ -302,6 +302,7 @@ static void tab_complete(char *buf, size_t *len, size_t *pos, size_t cap,
 	if (prompt)
 		redraw(prompt, buf, *len, *pos);
 }
+
 ssize_t line_read(char *p, char *out, size_t cap) {
 	tcflush(STDIN_FILENO, TCIFLUSH);
 	if (cap == 0)
