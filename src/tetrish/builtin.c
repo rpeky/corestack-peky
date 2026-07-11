@@ -312,12 +312,16 @@ static int bi_setenv(int argc, char **argv) {
 
 		// strip quotations
 		size_t len = strlen(value);
-		if ((value[0] == '"' || value[0] == '\'') && value[0] == value[len - 1] &&
-			len > 1) {
+		if (len > 1 && 
+			(value[0] == '"' || value[0] == '\'') && 
+			value[0] == value[len - 1]) {
 			value[len - 1] = '\0';
 			value++;
 			len -= 2;
 		}
+
+		// I just realised that this assumes all envs are paths lol
+		/*
 		// adjust relative path to aboslute to call it wherever
 		// default expects absolute path
 		char adjusted[PATH_MAX] = {0};
@@ -331,6 +335,7 @@ static int bi_setenv(int argc, char **argv) {
 			snprintf(adjusted, len_adj, "%s/%s", cwd, value);
 			value = adjusted;
 		}
+		*/
 
 		printf("Setting name for %s %s\n", name, value);
 		if (setenv(name, value, 1) == -1) {

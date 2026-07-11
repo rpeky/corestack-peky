@@ -41,6 +41,7 @@ clean:
 	rm -rf build
 	rm -rf bin
 	rm -rf tmp
+	rm -rf archive
 
 
 -include $(TETRISH_OBJS:.o=.d)

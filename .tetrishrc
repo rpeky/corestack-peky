@@ -7,8 +7,5 @@ alias ll="ls -l -a -h"
 alias py="python3"
 alias kms="exit"
 
-echo "Setting Backup Path"
-setenv BACKUP_DIR="./files"
-sys
-
-setenv TETRISTCP="2234"
+setenv BACKUP_DIR="./bin"
+setenv TETRISTCP=2234
