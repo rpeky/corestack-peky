@@ -42,6 +42,12 @@ typedef struct chord_node{
 
 chord_id_t finger_start(chord_id_t chonode_id, chord_id_t finger);
 chord_id_t finger_interval_end(chord_id_t node_id, chord_id_t finger);
-void calculate_fingertable(chord_node *node);
 
+chord_peer find_successor_linear(chord_id_t key, const chord_peer *peers, 
+		unsigned peer_count);
+
+void calculate_fingertable(chord_node *node);
+void calculate_fingertable_known_nodes(chord_node *node,
+		const chord_peer *peers,
+		unsigned peer_count);
 #endif
