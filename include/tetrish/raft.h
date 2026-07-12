@@ -37,18 +37,67 @@ typedef enum core_cmd_type {
 	CORE_CMD_GAME_INPUT,
 } core_cmd_type;
 
-typedef struct core_command {
+typedef enum raft_msg_type{
+	RAFT_MSG_REQUEST_VOTE,
+	RAFT_MSG_REQUEST_VOTE_RESPONSE,
+	RAFT_MSG_APPEND_ENTRIES,
+	RAFT_MSG_APPEND_ENTRIES_RESPONSE,
+	RAFT_MSG_CLIENT_COMMAND_MESSAGE,
+} raft_msg_type;
+
+typedef struct client_command {
 	core_cmd_type type;
 	uint64_t room_key;
 	uint64_t player_id;
 	uint32_t input;
-} core_command;
+} client_command;
 
+// Log struct
 typedef struct LogEntry{
 	raft_index_t index;
 	raft_term_t term;
-	core_command command;
+	client_command command;
 } LogEntry;
+
+typedef struct AppendEntriesRequest{
+	raft_term_t term;
+	raft_node_id_t leaderId;
+	raft_index_t prevLogIndex;
+	raft_term_t prevLogTerm;
+	raft_index_t leaderCommit;
+	size_t log_len;
+	LogEntry log[];
+} AppendEntriesRequest;
+
+typedef struct AppendEntriesResponse{
+	raft_term_t term;
+	bool success;
+} AppendEntriesResponse;
+
+typedef struct RequestVoteRequest{
+	raft_term_t term;
+	raft_index_t lastLogIndex;
+	raft_term_t lastLogTerm;
+	raft_node_id_t candidateId;
+} RequestVoteRequest;
+
+typedef struct RequestVoteResponse{
+	raft_term_t term;
+	bool voteGranted;
+} RequestVoteResponse;
+
+typedef struct raft_message{
+	raft_msg_type type;
+	size_t peer_idx;
+
+	union{
+		AppendEntriesRequest append_entry;
+		AppendEntriesResponse append_entry_response;
+		RequestVoteRequest request_vote;
+		RequestVoteResponse request_vote_response;
+	} body;
+
+} raft_message;
 
 // since there won't be so many peers im just gonna wing it w an array
 // laze implement another hashmap
@@ -58,6 +107,7 @@ typedef struct raft_peer {
 	uint16_t port;
 } raft_peer;
 
+// core state machine mechanics
 // probably have to do log compaction/rotation later, or increase the buffer size
 typedef struct PersistentState{
 	raft_term_t currentTerm;
