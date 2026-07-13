@@ -1,18 +1,21 @@
 #ifndef TETRISH_RAFT_H
 #define TETRISH_RAFT_H
 
+#include <pthread.h>
+#include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 #include <time.h>
-#include <stdlib.h>
-#include <stdbool.h>
-#include <pthread.h>
 
 // change this later for more peers
 #define RAFT_MAX_PEERS 8
 #define RAFT_LOG_CAP 1024
+
+// change this later to change append entry size
+#define RAFT_APPEND_BATCH 64
 
 // to show impossible values later (no vote etc)
 #define RAFT_NONE UINT64_MAX
@@ -24,7 +27,7 @@ typedef uint64_t raft_index_t;
 typedef uint64_t raft_term_t;
 
 // Please read the Ongario Raft Paper included in the references
-typedef enum ServerState{
+typedef enum ServerState {
 	FOLLOWER,
 	CANDIDATE,
 	LEADER,
@@ -37,7 +40,7 @@ typedef enum core_cmd_type {
 	CORE_CMD_GAME_INPUT,
 } core_cmd_type;
 
-typedef enum raft_msg_type{
+typedef enum raft_msg_type {
 	RAFT_MSG_REQUEST_VOTE,
 	RAFT_MSG_REQUEST_VOTE_RESPONSE,
 	RAFT_MSG_APPEND_ENTRIES,
@@ -53,44 +56,44 @@ typedef struct client_command {
 } client_command;
 
 // Log struct
-typedef struct LogEntry{
+typedef struct LogEntry {
 	raft_index_t index;
 	raft_term_t term;
 	client_command command;
 } LogEntry;
 
-typedef struct AppendEntriesRequest{
+typedef struct AppendEntriesRequest {
 	raft_term_t term;
 	raft_node_id_t leaderId;
 	raft_index_t prevLogIndex;
 	raft_term_t prevLogTerm;
 	raft_index_t leaderCommit;
 	size_t log_len;
-	LogEntry log[];
+	LogEntry log[RAFT_APPEND_BATCH];
 } AppendEntriesRequest;
 
-typedef struct AppendEntriesResponse{
+typedef struct AppendEntriesResponse {
 	raft_term_t term;
 	bool success;
 } AppendEntriesResponse;
 
-typedef struct RequestVoteRequest{
+typedef struct RequestVoteRequest {
 	raft_term_t term;
 	raft_index_t lastLogIndex;
 	raft_term_t lastLogTerm;
 	raft_node_id_t candidateId;
 } RequestVoteRequest;
 
-typedef struct RequestVoteResponse{
+typedef struct RequestVoteResponse {
 	raft_term_t term;
 	bool voteGranted;
 } RequestVoteResponse;
 
-typedef struct raft_message{
+typedef struct raft_message {
 	raft_msg_type type;
 	size_t peer_idx;
 
-	union{
+	union {
 		AppendEntriesRequest append_entry;
 		AppendEntriesResponse append_entry_response;
 		RequestVoteRequest request_vote;
@@ -109,20 +112,21 @@ typedef struct raft_peer {
 
 // core state machine mechanics
 // probably have to do log compaction/rotation later, or increase the buffer size
-typedef struct PersistentState{
+typedef struct PersistentState {
 	raft_term_t currentTerm;
 	raft_node_id_t votedFor;
 	LogEntry log[RAFT_LOG_CAP];
+	// later to sancheck if size_t or raft_index_t is more suitable for loglen
 	size_t log_len;
 } PersistentState;
 
-typedef struct VolatileState{
+typedef struct VolatileState {
 	raft_index_t commitIndex;
 	raft_index_t lastApplied;
 } VolatileState;
 
 // volatile state specific to candidate, resets on election
-typedef struct VolatileStateCandidate{
+typedef struct VolatileStateCandidate {
 	raft_term_t electionterm;
 	// votes responded and votes granted map
 	bool votes_responded[RAFT_MAX_PEERS];
@@ -130,14 +134,14 @@ typedef struct VolatileStateCandidate{
 } VolatileStateCandidate;
 
 // volatile state specific to leader, resets on election
-typedef struct VolatileStateLeader{
+typedef struct VolatileStateLeader {
 	// tracker for nextindex and match index for all followers
 	raft_index_t next_index[RAFT_MAX_PEERS];
 	raft_index_t match_index[RAFT_MAX_PEERS];
 } VolatileStateLeader;
 
 // overall state machine values
-typedef struct raft_node{
+typedef struct raft_node {
 	// server state/role
 	ServerState state;
 
@@ -161,10 +165,9 @@ typedef struct raft_node{
 	raft_msec_t heartbeat_interval_ms;
 
 	// need to have a logfile
-	
+
 	// the hero, mr mutex
 	pthread_mutex_t mu;
 } raft_node;
-
 
 #endif
