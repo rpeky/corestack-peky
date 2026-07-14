@@ -170,4 +170,23 @@ typedef struct raft_node {
 	pthread_mutex_t mu;
 } raft_node;
 
+// functions
+
+raft_index_t max(raft_index_t a, raft_index_t b);
+void heartbeat_tick(raft_node *r);
+size_t majority(size_t n);
+raft_index_t raft_last_log_index(raft_node *r);
+raft_term_t raft_last_log_term(raft_node *r);
+static raft_msec_t raft_now_msec(void);
+size_t raft_timeout(raft_node *r, raft_message out[], size_t out_cap);
+void initialise_raft_sm(raft_node *r, raft_node_id_t id);
+void raft_clear_candidate_state(raft_node *r);
+void raft_clear_leader_state(raft_node *r);
+void update_term(raft_node *r, raft_term_t newTerm);
+void AppendEntries(raft_node *r, raft_node_id_t peer);
+void HandleAppendEntriesRequest(raft_node *r, AppendEntriesRequest *req);
+void HandleAppendEntriesResponse(raft_node *r, AppendEntriesResponse *resp, raft_node_id_t peer);
+
+int main(void);
+
 #endif
