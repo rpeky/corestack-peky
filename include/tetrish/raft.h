@@ -173,19 +173,21 @@ typedef struct raft_node {
 // functions
 
 raft_index_t max(raft_index_t a, raft_index_t b);
-void heartbeat_tick(raft_node *r);
-size_t majority(size_t n);
-raft_index_t raft_last_log_index(raft_node *r);
-raft_term_t raft_last_log_term(raft_node *r);
-static raft_msec_t raft_now_msec(void);
+bool heartbeat_tick(raft_node *r, AppendEntriesRequest *req);
+bool checkLog(raft_index_t reqLogIdx, raft_term_t reqLogTerm, raft_index_t lastIdx, raft_term_t lastTerm);
+void raft_reset_election_timer(raft_node *r);
+void raft_init_candidate_state(raft_node *r, raft_term_t term);
+void raft_init_leader_state(raft_node *r);
 size_t raft_timeout(raft_node *r, raft_message out[], size_t out_cap);
 void initialise_raft_sm(raft_node *r, raft_node_id_t id);
 void raft_clear_candidate_state(raft_node *r);
 void raft_clear_leader_state(raft_node *r);
+void update_term_locked(raft_node *r, raft_term_t newTerm);
 void update_term(raft_node *r, raft_term_t newTerm);
-void AppendEntries(raft_node *r, raft_node_id_t peer);
+void AppendEntries(raft_node *r, size_t peer_idx);
 void HandleAppendEntriesRequest(raft_node *r, AppendEntriesRequest *req);
 void HandleAppendEntriesResponse(raft_node *r, AppendEntriesResponse *resp, raft_node_id_t peer);
+RequestVoteResponse HandleRequestVoteRequest(raft_node *r, RequestVoteRequest *req);
 
 int main(void);
 

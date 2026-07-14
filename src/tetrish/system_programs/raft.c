@@ -6,15 +6,15 @@ raft_index_t max(raft_index_t a, raft_index_t b) {
 }
 
 // Heartbeat
-AppendEntriesRequest heartbeat_tick(raft_node *r) {
+bool heartbeat_tick(raft_node *r, AppendEntriesRequest *req) {
 	pthread_mutex_lock(&(r->mu));
 	if (r->state == FAILED || r->state != LEADER) {
 		pthread_mutex_unlock(&(r->mu));
-		return;
+		return false;
 	}
 
 	// create an empty append entry
-	AppendEntriesRequest req = {
+	*req = (AppendEntriesRequest){
 		.term = r->pstate.currentTerm,
 		.leaderId = r->id,
 		.prevLogIndex = 0,
@@ -26,34 +26,48 @@ AppendEntriesRequest heartbeat_tick(raft_node *r) {
 	// send the empty request
 
 	pthread_mutex_unlock(&r->mu);
-	return req;
+	return true;
 }
 
-size_t majority(size_t n) {
+static size_t majority(size_t n) {
 	return (n / 2) + 1;
 }
 
-bool checkLog(raft_index_t reqLogIdx, raft_term_t reqLogTerm, raft_index_t lastIdx,
-	      raft_term_t lastTerm){
+bool checkLog(raft_index_t reqLogIdx, raft_term_t reqLogTerm, raft_index_t lastIdx, raft_term_t lastTerm) {
 	if (reqLogTerm != lastTerm) {
-		return reqLogTerm > lastTerm
+		return reqLogTerm > lastTerm;
 	}
 	// check last idx
-	return reqLogIdx >= lastIdx
+	return reqLogIdx >= lastIdx;
 }
 
 // local calculation
-raft_index_t raft_last_log_index(raft_node *r) {
+static raft_index_t raft_last_log_index(raft_node *r) {
 	return (raft_index_t)r->pstate.log_len;
 }
 
 // local calculation
-raft_term_t raft_last_log_term(raft_node *r) {
+static raft_term_t raft_last_log_term(raft_node *r) {
 	if (r->pstate.log_len == 0)
 		return 0;
 
 	// search through the log for the last used term
 	return r->pstate.log[r->pstate.log_len - 1].term;
+}
+
+// local calculation
+static bool raft_find_peer_index(const raft_node *r, raft_node_id_t peer_id, size_t *peer_idx) {
+	if (r == NULL || peer_idx == NULL)
+		return false;
+
+	for (size_t i = 0; i < r->peer_count; i++) {
+		if (r->peers[i].id == peer_id) {
+			*peer_idx = i;
+			return true;
+		}
+	}
+
+	return false;
 }
 
 // Timing mechanics for timeout
@@ -141,9 +155,9 @@ size_t raft_timeout(raft_node *r, raft_message out[], size_t out_cap) {
 
 	// debug
 	printf("[node=%lu] TIMEOUT currentTerm=%lu state=%d -> start election\n",
-	(unsigned long)r->id,
-	(unsigned long)r->pstate.currentTerm,
-	r->state);
+	       (unsigned long)r->id,
+	       (unsigned long)r->pstate.currentTerm,
+	       r->state);
 
 	// timeout expired
 	// leader is now invalid
@@ -157,15 +171,13 @@ size_t raft_timeout(raft_node *r, raft_message out[], size_t out_cap) {
 
 	raft_init_candidate_state(r, r->pstate.currentTerm);
 
-	r->
-
-		// debug
-		printf("[node=%lu] BECAME CANDIDATE term=%lu votedFor=%lu lastIdx=%lu lastTerm=%lu\n",
-	 (unsigned long)r->id,
-	 (unsigned long)r->pstate.currentTerm,
-	 (unsigned long)r->pstate.votedFor,
-	 (unsigned long)raft_last_log_index(r),
-	 (unsigned long)raft_last_log_term(r));
+	// debug
+	printf("[node=%lu] BECAME CANDIDATE term=%lu votedFor=%lu lastIdx=%lu lastTerm=%lu\n",
+	       (unsigned long)r->id,
+	       (unsigned long)r->pstate.currentTerm,
+	       (unsigned long)r->pstate.votedFor,
+	       (unsigned long)raft_last_log_index(r),
+	       (unsigned long)raft_last_log_term(r));
 
 	// reset election timeout
 	raft_reset_election_timer(r);
@@ -262,7 +274,7 @@ void update_term_locked(raft_node *r, raft_term_t newTerm) {
 	raft_reset_election_timer(r);
 }
 
-void update_term(raft_node *r, raft_term_t newTerm){
+void update_term(raft_node *r, raft_term_t newTerm) {
 	if (r == NULL) {
 		return;
 	}
@@ -300,8 +312,8 @@ void AppendEntries(raft_node *r, size_t peer_idx) {
 
 		entryCount =
 			available < RAFT_APPEND_BATCH
-			? (size_t)available
-			: RAFT_APPEND_BATCH;
+				? (size_t)available
+				: RAFT_APPEND_BATCH;
 	}
 
 	// build struct to send
@@ -333,8 +345,7 @@ void HandleAppendEntriesRequest(raft_node *r, AppendEntriesRequest *req) {
 	// send response
 }
 
-void HandleAppendEntriesResponse(raft_node *r, AppendEntriesResponse *resp,
-				 raft_node_id_t peer) {
+void HandleAppendEntriesResponse(raft_node *r, AppendEntriesResponse *resp, raft_node_id_t peer) {
 	if (r->state != LEADER)
 		return;
 
@@ -353,7 +364,7 @@ void HandleAppendEntriesResponse(raft_node *r, AppendEntriesResponse *resp,
 	AppendEntries(r, peer);
 }
 
-RequestVoteResponse HandleRequestVoteRequest(raft_node *r, RequestVoteRequest *req){
+RequestVoteResponse HandleRequestVoteRequest(raft_node *r, RequestVoteRequest *req) {
 	bool voteGranted = false;
 
 	// create empty response body
@@ -362,36 +373,34 @@ RequestVoteResponse HandleRequestVoteRequest(raft_node *r, RequestVoteRequest *r
 		.voteGranted = voteGranted,
 	};
 
-	if(r==NULL || req==NULL) return;
+	if (r == NULL || req == NULL)
+		return resp;
 
 	pthread_mutex_lock(&r->mu);
 
 	// check if req RPC term is strictly greater, if so run the update
-	if(req->term > r->pstate.currentTerm)
+	if (req->term > r->pstate.currentTerm)
 		update_term_locked(r, req->term);
-
 
 	// negate if req is stale
 	// expect the other sm to run update with this more recent term
-	if(req->term < r->pstate.currentTerm){
+	if (req->term < r->pstate.currentTerm) {
 		pthread_mutex_unlock(&r->mu);
 		return resp;
 	}
 
-	// at this point, if leader is behind would have demoted, 
+	// at this point, if leader is behind would have demoted,
 	// remaining are followers, candidates and failed states
 	// probably excessive
-	if(r->state == LEADER){
+	if (r->state == LEADER) {
 		pthread_mutex_unlock(&r->mu);
 		return resp;
 	}
 
-	// vote for candidate if able to 
-	if((r->pstate.votedFor == RAFT_NONE 
-		|| r->pstate.votedFor == req-> candidateId) 
-		&& checkLog(req.lastLogIndex, req.lastLogTerm, 
-	        raft_last_log_index(r), raft_last_log_term(r)){
-		r->pstate.votedFor = candidateId;
+	// vote for candidate if able to
+	if ((r->pstate.votedFor == RAFT_NONE || r->pstate.votedFor == req->candidateId) && checkLog(req->lastLogIndex, req->lastLogTerm,
+												    raft_last_log_index(r), raft_last_log_term(r))) {
+		r->pstate.votedFor = req->candidateId;
 		r->latest_heartbeat_ms = raft_now_msec();
 		resp.voteGranted = true;
 	}
