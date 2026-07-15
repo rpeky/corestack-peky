@@ -1,12 +1,31 @@
 #include "tetrish/raft.h"
 
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <time.h>
+
+/*--------------------------Internal prototypes-------------------------------*/
+static raft_index_t max(raft_index_t a, raft_index_t b);
+static bool heartbeat_tick(raft_node *r, AppendEntriesRequest *req);
+static bool checkLog(raft_index_t reqLogIdx, raft_term_t reqLogTerm, raft_index_t lastIdx, raft_term_t lastTerm);
+static void raft_reset_election_timer(raft_node *r);
+static void raft_init_candidate_state(raft_node *r, raft_term_t term);
+static void raft_init_leader_state(raft_node *r);
+static void raft_clear_candidate_state(raft_node *r);
+static void raft_clear_leader_state(raft_node *r);
+static void update_term_locked(raft_node *r, raft_term_t newTerm);
+static void update_term(raft_node *r, raft_term_t newTerm);
+
+/*--------------------------Internal prototypes-------------------------------*/
+
 // Helper functions
-raft_index_t max(raft_index_t a, raft_index_t b) {
+static raft_index_t max(raft_index_t a, raft_index_t b) {
 	return a > b ? a : b;
 }
 
 // Heartbeat
-bool heartbeat_tick(raft_node *r, AppendEntriesRequest *req) {
+static bool heartbeat_tick(raft_node *r, AppendEntriesRequest *req) {
 	pthread_mutex_lock(&(r->mu));
 	if (r->state == FAILED || r->state != LEADER) {
 		pthread_mutex_unlock(&(r->mu));
@@ -29,11 +48,11 @@ bool heartbeat_tick(raft_node *r, AppendEntriesRequest *req) {
 	return true;
 }
 
-static size_t majority(size_t n) {
+size_t majority(size_t n) {
 	return (n / 2) + 1;
 }
 
-bool checkLog(raft_index_t reqLogIdx, raft_term_t reqLogTerm, raft_index_t lastIdx, raft_term_t lastTerm) {
+static bool checkLog(raft_index_t reqLogIdx, raft_term_t reqLogTerm, raft_index_t lastIdx, raft_term_t lastTerm) {
 	if (reqLogTerm != lastTerm) {
 		return reqLogTerm > lastTerm;
 	}
@@ -42,12 +61,12 @@ bool checkLog(raft_index_t reqLogIdx, raft_term_t reqLogTerm, raft_index_t lastI
 }
 
 // local calculation
-static raft_index_t raft_last_log_index(raft_node *r) {
+raft_index_t raft_last_log_index(raft_node *r) {
 	return (raft_index_t)r->pstate.log_len;
 }
 
 // local calculation
-static raft_term_t raft_last_log_term(raft_node *r) {
+raft_term_t raft_last_log_term(raft_node *r) {
 	if (r->pstate.log_len == 0)
 		return 0;
 
@@ -56,7 +75,7 @@ static raft_term_t raft_last_log_term(raft_node *r) {
 }
 
 // local calculation
-static bool raft_find_peer_index(const raft_node *r, raft_node_id_t peer_id, size_t *peer_idx) {
+bool raft_find_peer_index(const raft_node *r, raft_node_id_t peer_id, size_t *peer_idx) {
 	if (r == NULL || peer_idx == NULL)
 		return false;
 
@@ -71,7 +90,7 @@ static bool raft_find_peer_index(const raft_node *r, raft_node_id_t peer_id, siz
 }
 
 // Timing mechanics for timeout
-static raft_msec_t raft_now_msec(void) {
+raft_msec_t raft_now_msec(void) {
 
 	/* Man timespec
 	struct timespec {
@@ -87,7 +106,7 @@ static raft_msec_t raft_now_msec(void) {
 	return (raft_msec_t)ts.tv_sec * 1000 + ts.tv_nsec / 1000000;
 }
 
-static int raft_election_timeout_expired(const raft_node *r) {
+int raft_election_timeout_expired(const raft_node *r) {
 	raft_msec_t now = raft_now_msec();
 
 	// check if clock failed
@@ -97,24 +116,24 @@ static int raft_election_timeout_expired(const raft_node *r) {
 	return now - r->latest_heartbeat_ms >= r->election_timeout_duration_ms;
 }
 
-static raft_msec_t raft_random_election_timeout(void) {
+raft_msec_t raft_random_election_timeout(void) {
 	return 150 + rand() % 150; /* 150..299 ms */
 }
 
-void raft_reset_election_timer(raft_node *r) {
+static void raft_reset_election_timer(raft_node *r) {
 	r->election_timeout_duration_ms = raft_random_election_timeout();
 	r->latest_heartbeat_ms = raft_now_msec();
 }
 
 // State Machine reset - candidate
-void raft_init_candidate_state(raft_node *r, raft_term_t term) {
+static void raft_init_candidate_state(raft_node *r, raft_term_t term) {
 	// fill the struct w 0 to initialise
 	memset(&r->cstate, 0, sizeof(r->cstate));
 	r->cstate.electionterm = term;
 }
 
 // State Machine reset - leader
-void raft_init_leader_state(raft_node *r) {
+static void raft_init_leader_state(raft_node *r) {
 	// set as leader
 	r->state = LEADER;
 	r->leader_id = r->id;
@@ -131,7 +150,7 @@ void raft_init_leader_state(raft_node *r) {
 
 // send request vote on timeout
 // tetrisd will pass the out container and send the message to the peers
-size_t raft_timeout(raft_node *r, raft_message out[], size_t out_cap) {
+static size_t raft_timeout(raft_node *r, raft_message out[], size_t out_cap) {
 	size_t out_len = 0;
 
 	// chekc input fail
@@ -242,16 +261,16 @@ void initialise_raft_sm(raft_node *r, raft_node_id_t id) {
 	// need a fd to logfile for this server
 }
 
-void raft_clear_candidate_state(raft_node *r) {
+static void raft_clear_candidate_state(raft_node *r) {
 	memset(&r->cstate, 0, sizeof(r->cstate));
 }
 
-void raft_clear_leader_state(raft_node *r) {
+static void raft_clear_leader_state(raft_node *r) {
 	memset(&r->lstate, 0, sizeof(r->lstate));
 }
 
 // to use if mutex is already in place
-void update_term_locked(raft_node *r, raft_term_t newTerm) {
+static void update_term_locked(raft_node *r, raft_term_t newTerm) {
 
 	if (newTerm <= r->pstate.currentTerm) {
 		return;
@@ -274,7 +293,7 @@ void update_term_locked(raft_node *r, raft_term_t newTerm) {
 	raft_reset_election_timer(r);
 }
 
-void update_term(raft_node *r, raft_term_t newTerm) {
+static void update_term(raft_node *r, raft_term_t newTerm) {
 	if (r == NULL) {
 		return;
 	}
@@ -398,8 +417,11 @@ RequestVoteResponse HandleRequestVoteRequest(raft_node *r, RequestVoteRequest *r
 	}
 
 	// vote for candidate if able to
-	if ((r->pstate.votedFor == RAFT_NONE || r->pstate.votedFor == req->candidateId) && checkLog(req->lastLogIndex, req->lastLogTerm,
-												    raft_last_log_index(r), raft_last_log_term(r))) {
+	if ((r->pstate.votedFor == RAFT_NONE ||
+	     r->pstate.votedFor == req->candidateId) &&
+	    checkLog(req->lastLogIndex, req->lastLogTerm,
+		     raft_last_log_index(r), raft_last_log_term(r))) {
+
 		r->pstate.votedFor = req->candidateId;
 		r->latest_heartbeat_ms = raft_now_msec();
 		resp.voteGranted = true;

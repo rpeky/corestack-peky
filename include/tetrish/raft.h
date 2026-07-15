@@ -5,10 +5,6 @@
 #include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
-#include <stdio.h>
-#include <stdlib.h>
-#include <string.h>
-#include <time.h>
 
 // change this later for more peers
 #define RAFT_MAX_PEERS 8
@@ -45,7 +41,6 @@ typedef enum raft_msg_type {
 	RAFT_MSG_REQUEST_VOTE_RESPONSE,
 	RAFT_MSG_APPEND_ENTRIES,
 	RAFT_MSG_APPEND_ENTRIES_RESPONSE,
-	RAFT_MSG_CLIENT_COMMAND_MESSAGE,
 } raft_msg_type;
 
 typedef struct client_command {
@@ -75,6 +70,8 @@ typedef struct AppendEntriesRequest {
 typedef struct AppendEntriesResponse {
 	raft_term_t term;
 	bool success;
+	// we see if we can make the leader calculation easier with this
+	raft_index_t matchIndex;
 } AppendEntriesResponse;
 
 typedef struct RequestVoteRequest {
@@ -170,25 +167,18 @@ typedef struct raft_node {
 	pthread_mutex_t mu;
 } raft_node;
 
-// functions
-
-raft_index_t max(raft_index_t a, raft_index_t b);
-bool heartbeat_tick(raft_node *r, AppendEntriesRequest *req);
-bool checkLog(raft_index_t reqLogIdx, raft_term_t reqLogTerm, raft_index_t lastIdx, raft_term_t lastTerm);
-void raft_reset_election_timer(raft_node *r);
-void raft_init_candidate_state(raft_node *r, raft_term_t term);
-void raft_init_leader_state(raft_node *r);
-size_t raft_timeout(raft_node *r, raft_message out[], size_t out_cap);
+// functions to export
+size_t majority(size_t n);
+raft_index_t raft_last_log_index(raft_node *r);
+raft_term_t raft_last_log_term(raft_node *r);
+bool raft_find_peer_index(const raft_node *r, raft_node_id_t peer_id, size_t *peer_idx);
+raft_msec_t raft_now_msec(void);
+int raft_election_timeout_expired(const raft_node *r);
+raft_msec_t raft_random_election_timeout(void);
 void initialise_raft_sm(raft_node *r, raft_node_id_t id);
-void raft_clear_candidate_state(raft_node *r);
-void raft_clear_leader_state(raft_node *r);
-void update_term_locked(raft_node *r, raft_term_t newTerm);
-void update_term(raft_node *r, raft_term_t newTerm);
 void AppendEntries(raft_node *r, size_t peer_idx);
 void HandleAppendEntriesRequest(raft_node *r, AppendEntriesRequest *req);
 void HandleAppendEntriesResponse(raft_node *r, AppendEntriesResponse *resp, raft_node_id_t peer);
 RequestVoteResponse HandleRequestVoteRequest(raft_node *r, RequestVoteRequest *req);
-
-int main(void);
 
 #endif
