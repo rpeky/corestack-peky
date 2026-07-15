@@ -355,13 +355,53 @@ void AppendEntries(raft_node *r, size_t peer_idx) {
 	// send the appendentryreq *req payload to peer after unlock
 }
 
-void HandleAppendEntriesRequest(raft_node *r, AppendEntriesRequest *req) {
+AppendEntriesResponse HandleAppendEntriesRequest(raft_node *r, AppendEntriesRequest *req) {
 
+	// default to fail message
 	AppendEntriesResponse resp = {
 		.term = r->pstate.currentTerm,
-		.success = true,
+		.success = false,
 	};
+
 	// send response
+
+	pthread_mutex_lock(&r->mu);
+
+	// mismatched term - 5.1, return fail if lower
+	// release lock and return
+	// if a leader receives this, it means that it is lagging behind
+	if(req->term < r->pstate.currentTerm){
+		pthread_mutex_unlock(&r->mu);
+		return resp;
+	}
+
+	// run update term if larger, if leader demote
+	if(req->term > r->pstate.currentTerm){
+		update_term_locked(r, req->term);
+	}
+
+	// term is valid, send back a response timestamped to current term
+	resp.term = r->pstate.currentTerm;
+
+	// transition candidate to follower on leader contact (this message), 
+	// reset heartbeat timer
+	// in my head, only candidates or followers should reach this point of the code
+	if(r->state!=FAILED){
+		r->state = FOLLOWER;
+	}
+
+	// update state machine fields
+	r->leader_id = req->leaderId;
+	r->latest_heartbeat_ms = raft_now_msec();
+
+
+
+
+
+
+
+	pthread_mutex_unlock(&r->mu);
+	return resp;
 }
 
 void HandleAppendEntriesResponse(raft_node *r, AppendEntriesResponse *resp, raft_node_id_t peer) {

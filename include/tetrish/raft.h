@@ -177,7 +177,7 @@ int raft_election_timeout_expired(const raft_node *r);
 raft_msec_t raft_random_election_timeout(void);
 void initialise_raft_sm(raft_node *r, raft_node_id_t id);
 void AppendEntries(raft_node *r, size_t peer_idx);
-void HandleAppendEntriesRequest(raft_node *r, AppendEntriesRequest *req);
+AppendEntriesResponse HandleAppendEntriesRequest(raft_node *r, AppendEntriesRequest *req);
 void HandleAppendEntriesResponse(raft_node *r, AppendEntriesResponse *resp, raft_node_id_t peer);
 RequestVoteResponse HandleRequestVoteRequest(raft_node *r, RequestVoteRequest *req);
 
