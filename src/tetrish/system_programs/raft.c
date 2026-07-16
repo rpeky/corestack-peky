@@ -4,9 +4,13 @@
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
+#include <limits.h>
+#include <fcntl.h>
+#include <unistd.h>
 
 /*--------------------------Internal prototypes-------------------------------*/
 static raft_index_t max(raft_index_t a, raft_index_t b);
+static size_t find_peer_idx(raft_node *r, raft_node_id_t peer);
 static bool heartbeat_tick(raft_node *r, AppendEntriesRequest *req);
 static bool checkLog(raft_index_t reqLogIdx, raft_term_t reqLogTerm, raft_index_t lastIdx, raft_term_t lastTerm);
 static void raft_reset_election_timer(raft_node *r);
@@ -16,12 +20,58 @@ static void raft_clear_candidate_state(raft_node *r);
 static void raft_clear_leader_state(raft_node *r);
 static void update_term_locked(raft_node *r, raft_term_t newTerm);
 static void update_term(raft_node *r, raft_term_t newTerm);
+static void AdvanceCommitIndex_locked(raft_node *r);
+static void ApplyCommitedEnteries_locked(raft_node *r);
 
 /*--------------------------Internal prototypes-------------------------------*/
 
 // Helper functions
 static raft_index_t max(raft_index_t a, raft_index_t b) {
 	return a > b ? a : b;
+}
+
+// Create a logfile for commits
+void create_log_file(void) {
+	char log_path[PATH_MAX];
+	strncpy(log_path, project_root, sizeof(log_path) - 1);
+	strncat(log_path, "/tmp/raft.log",
+	 sizeof(log_path) - strlen(log_path) - 1);
+
+	int fd = open(log_path, O_WRONLY | O_CREAT | O_APPEND, 0644);
+	if (fd == -1) {
+		perror("log open");
+		return;
+	}
+
+	time_t now = time(NULL);
+	close(fd);
+}
+
+static void debug_printlog(raft_node *r) {
+	pthread_mutex_lock(&r->mu);
+	for (size_t i = 0; i < r->pstate.log_len; ++i) {
+		LogEntry entry = r->pstate.log[i];
+		printf("Log entry index %lu | Commit term %lu\n",
+	 entry.index, entry.term);
+		printf("Command (type): %d\n", entry.command.type);
+		printf("Command (roomkey): %lu\n", entry.command.room_key);
+		printf("Command (player_id): %lu\n", entry.command.player_id);
+		printf("Command (input): %u\n", entry.command.input);
+		printf("-----------------------------------------\n");
+	}
+	pthread_mutex_unlock(&r->mu);
+}
+
+static void writeLog(raft_node *r, LogEntry entry) {
+}
+
+static size_t find_peer_idx(raft_node *r, raft_node_id_t peer) {
+	size_t peeridx = SIZE_MAX;
+	for (size_t i = 0; i < r->peer_count; ++i) {
+		if (r->peers[i].id == peer)
+			peeridx = i;
+	}
+	return peeridx;
 }
 
 // Heartbeat
@@ -91,7 +141,6 @@ bool raft_find_peer_index(const raft_node *r, raft_node_id_t peer_id, size_t *pe
 
 // Timing mechanics for timeout
 raft_msec_t raft_now_msec(void) {
-
 	/* Man timespec
 	struct timespec {
 	   time_t     tv_sec;
@@ -174,9 +223,9 @@ static size_t raft_timeout(raft_node *r, raft_message out[], size_t out_cap) {
 
 	// debug
 	printf("[node=%lu] TIMEOUT currentTerm=%lu state=%d -> start election\n",
-	       (unsigned long)r->id,
-	       (unsigned long)r->pstate.currentTerm,
-	       r->state);
+	(unsigned long)r->id,
+	(unsigned long)r->pstate.currentTerm,
+	r->state);
 
 	// timeout expired
 	// leader is now invalid
@@ -192,11 +241,11 @@ static size_t raft_timeout(raft_node *r, raft_message out[], size_t out_cap) {
 
 	// debug
 	printf("[node=%lu] BECAME CANDIDATE term=%lu votedFor=%lu lastIdx=%lu lastTerm=%lu\n",
-	       (unsigned long)r->id,
-	       (unsigned long)r->pstate.currentTerm,
-	       (unsigned long)r->pstate.votedFor,
-	       (unsigned long)raft_last_log_index(r),
-	       (unsigned long)raft_last_log_term(r));
+	(unsigned long)r->id,
+	(unsigned long)r->pstate.currentTerm,
+	(unsigned long)r->pstate.votedFor,
+	(unsigned long)raft_last_log_index(r),
+	(unsigned long)raft_last_log_term(r));
 
 	// reset election timeout
 	raft_reset_election_timer(r);
@@ -229,7 +278,6 @@ static size_t raft_timeout(raft_node *r, raft_message out[], size_t out_cap) {
 }
 
 void initialise_raft_sm(raft_node *r, raft_node_id_t id) {
-
 	if (r == NULL)
 		return;
 
@@ -271,7 +319,6 @@ static void raft_clear_leader_state(raft_node *r) {
 
 // to use if mutex is already in place
 static void update_term_locked(raft_node *r, raft_term_t newTerm) {
-
 	if (newTerm <= r->pstate.currentTerm) {
 		return;
 	}
@@ -303,6 +350,57 @@ static void update_term(raft_node *r, raft_term_t newTerm) {
 	pthread_mutex_unlock(&r->mu);
 }
 
+// only run by leader -> used when mutex is locked
+static void AdvanceCommitIndex_locked(raft_node *r) {
+	// check if leader
+	if (r->state != LEADER) {
+		fprintf(stderr, "AdvanceCommitIndex_locked failed\n");
+		return;
+	}
+
+	raft_index_t lastIdx = raft_last_log_index(r);
+	size_t clustersize = r->peer_count + 1;
+
+	for (raft_index_t n = lastIdx; n > r->vstate.commitIndex; --n) {
+		if (r->pstate.log[n - 1].term != r->pstate.currentTerm) {
+			continue;
+		}
+
+		// exclude self
+		size_t track = 1;
+		for (size_t peer = 0; peer < r->peer_count; ++peer) {
+			// advance if greater to push pointer forward
+			if (r->lstate.match_index[peer] >= n) {
+				track++;
+			}
+		}
+
+		// check for majority, update to n if majority has this
+		if (track >= majority(clustersize)) {
+			r->vstate.commitIndex = n;
+			return;
+		} else {
+			// otherwise, this is the highest majority value
+			break;
+		}
+	}
+
+	return;
+}
+
+// this functio runs while muxtex is locked
+static void ApplyCommitedEnteries_locked(raft_node *r) {
+	// update last applied after logging
+	while (r->vstate.lastApplied < r->vstate.commitIndex) {
+		// extract log entry in index
+		LogEntry entry = r->pstate.log[r->vstate.lastApplied - 1];
+
+		// write to log file, on success increment last applied
+
+		r->vstate.lastApplied++;
+	}
+}
+
 // used by leader to replicate log entries using leder data
 // is also a kind of heartbeat
 void AppendEntries(raft_node *r, size_t peer_idx) {
@@ -331,8 +429,8 @@ void AppendEntries(raft_node *r, size_t peer_idx) {
 
 		entryCount =
 			available < RAFT_APPEND_BATCH
-				? (size_t)available
-				: RAFT_APPEND_BATCH;
+			? (size_t)available
+			: RAFT_APPEND_BATCH;
 	}
 
 	// build struct to send
@@ -356,7 +454,6 @@ void AppendEntries(raft_node *r, size_t peer_idx) {
 }
 
 AppendEntriesResponse HandleAppendEntriesRequest(raft_node *r, AppendEntriesRequest *req) {
-
 	// default to fail message
 	AppendEntriesResponse resp = {
 		.term = r->pstate.currentTerm,
@@ -370,23 +467,23 @@ AppendEntriesResponse HandleAppendEntriesRequest(raft_node *r, AppendEntriesRequ
 	// mismatched term - 5.1, return fail if lower
 	// release lock and return
 	// if a leader receives this, it means that it is lagging behind
-	if(req->term < r->pstate.currentTerm){
+	if (req->term < r->pstate.currentTerm) {
 		pthread_mutex_unlock(&r->mu);
 		return resp;
 	}
 
 	// run update term if larger, if leader demote
-	if(req->term > r->pstate.currentTerm){
+	if (req->term > r->pstate.currentTerm) {
 		update_term_locked(r, req->term);
 	}
 
 	// term is valid, send back a response timestamped to current term
 	resp.term = r->pstate.currentTerm;
 
-	// transition candidate to follower on leader contact (this message), 
+	// transition candidate to follower on leader contact (this message),
 	// reset heartbeat timer
 	// in my head, only candidates or followers should reach this point of the code
-	if(r->state!=FAILED){
+	if (r->state != FAILED) {
 		r->state = FOLLOWER;
 	}
 
@@ -394,17 +491,12 @@ AppendEntriesResponse HandleAppendEntriesRequest(raft_node *r, AppendEntriesRequ
 	r->leader_id = req->leaderId;
 	r->latest_heartbeat_ms = raft_now_msec();
 
-
-
-
-
-
-
 	pthread_mutex_unlock(&r->mu);
 	return resp;
 }
 
 void HandleAppendEntriesResponse(raft_node *r, AppendEntriesResponse *resp, raft_node_id_t peer) {
+	// Only leader will handle AE response
 	if (r->state != LEADER)
 		return;
 
@@ -412,15 +504,49 @@ void HandleAppendEntriesResponse(raft_node *r, AppendEntriesResponse *resp, raft
 	if (r->pstate.currentTerm > resp->term)
 		return;
 
+	pthread_mutex_lock(&r->mu);
+
 	// if not up to date, update logs
+	// leader should demote since term is lagging behind
+	if (r->pstate.currentTerm < resp->term) {
+		update_term_locked(r, resp->term);
+		pthread_mutex_unlock(&r->mu);
+		return;
+	}
+
+	// calculate peer index
+	size_t peer_idx = find_peer_idx(r, peer);
+
+	// return if peer can't be found
+	if (peer_idx == SIZE_MAX) {
+		fprintf(stderr, "HandleAppendEntriesResponse | Unable to find peer_idx\n");
+		pthread_mutex_unlock(&r->mu);
+		return;
+	}
 
 	// if successful, check if leader is behind, otherwise update lstate
+	if (resp->success) {
+		if (r->lstate.next_index[peer_idx] <= r->pstate.log_len) {
+			r->lstate.match_index[peer_idx] = r->lstate.next_index[peer];
+			r->lstate.next_index[peer_idx]++;
+		}
 
+		// commit index, apply commited index, return
+		AdvanceCommitIndex_locked(r);
+		ApplyCommitedEnteries_locked(r);
+
+		pthread_mutex_unlock(&r->mu);
+		return;
+	}
+
+	// otherwise
 	// fail means log inconsistency, decrement nextIndex and retry overwrite
 	// at worse it will hit zero and do a full overwrite for the logs
 	if (r->lstate.next_index[peer_idx] > 1)
 		r->lstate.next_index[peer_idx]--;
 	AppendEntries(r, peer);
+	pthread_mutex_unlock(&r->mu);
+	return;
 }
 
 RequestVoteResponse HandleRequestVoteRequest(raft_node *r, RequestVoteRequest *req) {
@@ -458,9 +584,9 @@ RequestVoteResponse HandleRequestVoteRequest(raft_node *r, RequestVoteRequest *r
 
 	// vote for candidate if able to
 	if ((r->pstate.votedFor == RAFT_NONE ||
-	     r->pstate.votedFor == req->candidateId) &&
-	    checkLog(req->lastLogIndex, req->lastLogTerm,
-		     raft_last_log_index(r), raft_last_log_term(r))) {
+		r->pstate.votedFor == req->candidateId) &&
+		checkLog(req->lastLogIndex, req->lastLogTerm,
+	   raft_last_log_index(r), raft_last_log_term(r))) {
 
 		r->pstate.votedFor = req->candidateId;
 		r->latest_heartbeat_ms = raft_now_msec();
