@@ -1,10 +1,63 @@
 #ifndef TETRISH_TETRISD_H
 #define TETRISH_TETRISD_H
 
-#include "raft.h"
 #include "chord.h"
+#include "raft.h"
+#include <stdbool.h>
+#include <string.h>
 
-typedef struct tetrisd_server{
+/*
+	I
+	[][][][]
+
+	J
+	[]
+	[][][]
+
+	L
+	    []
+	[][][]
+
+	O
+	[][]
+	[][]
+
+	S
+	  [][]
+	[][]
+
+	T
+	  []
+	[][][]
+
+	Z
+	[][]
+	  [][]
+*/
+
+enum tetrominos {
+	NONE,
+	I,
+	J,
+	L,
+	O,
+	S,
+	T,
+	Z
+};
+
+typedef struct tetrisboard {
+	bool well[10][18];
+	enum tetrominos hold;
+	size_t score;
+} tetrisboard;
+
+typedef struct tetrisd_room {
+	size_t player_count;
+	tetrisboard boards[32];
+} tetrisd_room;
+
+typedef struct tetrisd_server {
 	chord_node chord;
 	raft_node raft;
 } tetrisd_server;
