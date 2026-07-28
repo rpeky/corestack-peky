@@ -30,6 +30,7 @@ static raft_index_t max(raft_index_t a, raft_index_t b) {
 	return a > b ? a : b;
 }
 
+/*
 // Create a logfile for commits
 void create_log_file(void) {
 	char log_path[PATH_MAX];
@@ -46,6 +47,7 @@ void create_log_file(void) {
 	time_t now = time(NULL);
 	close(fd);
 }
+*/
 
 static void debug_printlog(raft_node *r) {
 	pthread_mutex_lock(&r->mu);

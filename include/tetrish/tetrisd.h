@@ -4,7 +4,11 @@
 #include "chord.h"
 #include "raft.h"
 #include <stdbool.h>
+#include <stdio.h>
 #include <string.h>
+
+#define HEIGHT 19
+#define WIDTH 12
 
 /*
 	I
@@ -46,8 +50,9 @@ enum tetrominos {
 	Z
 };
 
+// board should be inverted
 typedef struct tetrisboard {
-	bool well[10][18];
+	char well[HEIGHT][WIDTH];
 	enum tetrominos hold;
 	size_t score;
 } tetrisboard;
