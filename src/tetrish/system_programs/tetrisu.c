@@ -1,4 +1,4 @@
-#include <stdio.h>
+#include "tetrish/tetrisu.h"
 
 void print_options() {
 	printf("1 - Single Player\n");

@@ -45,6 +45,40 @@ void boarddebug(tetrisboard *b) {
 	printf("board score: %zu\n", b->score);
 }
 
+// Movement
+void tetris_tick() {
+}
+
+bool tetris_move_left(tetrisboard *b) {
+	(void)b;
+	return false;
+}
+
+bool tetris_move_right(tetrisboard *b) {
+	(void)b;
+	return false;
+}
+
+bool tetris_soft_drop(tetrisboard *b) {
+	(void)b;
+	return false;
+}
+
+bool tetris_hard_drop(tetrisboard *b) {
+	(void)b;
+	return false;
+}
+
+bool tetris_rotate_clockwise(tetrisboard *b) {
+	(void)b;
+	return false;
+}
+
+bool tetris_rotate_anticlockwise(tetrisboard *b) {
+	(void)b;
+	return false;
+}
+
 int main(int argc, char **argv) {
 	(void)argc;
 	(void)argv;
@@ -60,7 +94,7 @@ int main(int argc, char **argv) {
 	boarddebug(&sampleboard);
 
 	// set temp values
-	sampleboard.hold= Z;
+	sampleboard.hold = Z;
 	sampleboard.score = 123;
 	boarddebug(&sampleboard);
 

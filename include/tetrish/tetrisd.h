@@ -50,11 +50,21 @@ enum tetrominos {
 	Z
 };
 
+typedef struct active_piece {
+	enum tetrominos type;
+	int row;
+	int height;
+	unsigned rotation;
+} active_piece;
+
 // board should be inverted
 typedef struct tetrisboard {
 	char well[HEIGHT][WIDTH];
+	active_piece currentp;
 	enum tetrominos hold;
+	enum tetrominos next;
 	size_t score;
+	bool gameover;
 } tetrisboard;
 
 typedef struct tetrisd_room {
