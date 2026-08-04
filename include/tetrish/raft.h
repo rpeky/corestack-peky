@@ -5,6 +5,8 @@
 #include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
+#include <stdint.h>
+#include <inttypes.h>
 
 // change this later for more peers
 #define RAFT_MAX_PEERS 8
@@ -162,6 +164,8 @@ typedef struct raft_node {
 	raft_msec_t heartbeat_interval_ms;
 
 	// need to have a logfile
+	FILE log_file;
+	const char *path_log_file;
 
 	// the hero, mr mutex
 	pthread_mutex_t mu;

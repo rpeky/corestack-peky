@@ -390,7 +390,7 @@ static void AdvanceCommitIndex_locked(raft_node *r) {
 	return;
 }
 
-// this functio runs while muxtex is locked
+// this function runs while muxtex is locked
 static void ApplyCommitedEnteries_locked(raft_node *r) {
 	// update last applied after logging
 	while (r->vstate.lastApplied < r->vstate.commitIndex) {
@@ -398,6 +398,13 @@ static void ApplyCommitedEnteries_locked(raft_node *r) {
 		LogEntry entry = r->pstate.log[r->vstate.lastApplied - 1];
 
 		// write to log file, on success increment last applied
+		fprintf(r->log_file, "--------------------------------------\n");
+		fprintf(r->log_file, "Index #%" PRIu64 " | Term #%" PRIu64 "\n",
+			entry.index, entry.term);
+		fprintf(r->log_file, "Command type: %d\n", entry.command.type);
+		fprintf(r->log_file, "Room key: %" PRIu64 "\n", entry.command.room_key);
+		fprintf(r->log_file, "Player ID: %" PRIu64 "\n", entry.command.player_id);
+		fprintf(r->log_file, "Player input: %" PRIu32 "\n", entry.command.input);
 
 		r->vstate.lastApplied++;
 	}
