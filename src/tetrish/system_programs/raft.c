@@ -22,6 +22,7 @@ static void update_term_locked(raft_node *r, raft_term_t newTerm);
 static void update_term(raft_node *r, raft_term_t newTerm);
 static void AdvanceCommitIndex_locked(raft_node *r);
 static void ApplyCommitedEnteries_locked(raft_node *r);
+static int persist_term_vote_locked(raft_node *r);
 
 /*--------------------------Internal prototypes-------------------------------*/
 
@@ -30,24 +31,106 @@ static raft_index_t max(raft_index_t a, raft_index_t b) {
 	return a > b ? a : b;
 }
 
-/*
-// Create a logfile for commits
-void create_log_file(void) {
+// restore logs if possible
+int restore_pstate(raft_node *r){
+	// open log file if it exists
 	char log_path[PATH_MAX];
-	strncpy(log_path, project_root, sizeof(log_path) - 1);
-	strncat(log_path, "/tmp/raft.log",
-	 sizeof(log_path) - strlen(log_path) - 1);
 
-	int fd = open(log_path, O_WRONLY | O_CREAT | O_APPEND, 0644);
-	if (fd == -1) {
-		perror("log open");
-		return;
+	snprintf(log_path, sizeof(log_path), "%s/tmp/raft.log", project_root);
+	int fd = open(log_path, O_RDONLY); 
+
+	if(fd==-1){
+		if(errno==ENOENT){
+			// nothing to restore
+			// file did not exist before this
+			return 0;
+		}
+		perror("open raft log to restore");
+		return -1;
+	}
+
+	// lol the fd is open using fdopen to use FILE type to parse
+	FILE *fp = fdopen(fd, "r");
+	if(fp==NULL){
+		perror("fdopen log fd");
+		close(fd);
+		return -1;
+	}
+
+	char line[256];
+
+	while(fgets(line, sizeof(line), fp)!=0){
+
+		// restore term
+		raft_term_t term;
+
+		if (sscanf(line, "TERM %" SCNu64, &term) == 1) {
+			r->pstate.currentTerm = term;
+			continue;
+		}
+	
+		// restore voted for
+		if (sscanf(line, "VOTED_FOR %" SCNu64, &voted_for) == 1) {
+			r->pstate.votedFor = voted_for;
+			continue;
+		}
+
+		// create the struct to parse an entry
+		LogEntry entry = {0};
+		int command_type;
+
+		int matched = sscanf(
+			line,
+			"ENTRY %" SCNu64
+			" %" SCNu64
+			" %d" 
+			" %" SCNu64
+			" %" SCNu64
+			" %" SCNu32,
+			&entry.index,
+			&entry.term,
+			&command_type,
+			&entry.command.room_key,
+			&entry.command.player_id,
+			&entry.command.input
+		);
+
+		if(matched!=6) continue;
+
+		entry.command.type = (core_cmd_type)command_type;
+
+		if(r->pstate.log_len >= RAFT_LOG_CAP){
+			fprintf(stderr, "restore pstate: exceeded log capacity\n");
+			fclose(fp);
+			return -1;
+		}
+
+		r->pstate.log[r->pstate.log_len] = entry;
+		r->pstate.log_len++;
+	}
+
+	fclose(fp);
+	return 0;
+}
+
+// Create a logfile for commits
+int create_log_file(raft_node *r) {
+	char log_path[PATH_MAX];
+
+	snprintf(log_path, sizeof(log_path), "%s/tmp/raft.log", project_root);
+
+	r->log_file = open(log_path, O_WRONLY | O_CREAT | O_APPEND, 0644);
+
+	if (r->log_file == -1) {
+		perror("open log open");
+		return -1;
 	}
 
 	time_t now = time(NULL);
-	close(fd);
+	dprintf(r->log_file, "=================================\n");
+	dprintf(r->log_file, "[%s] Log file opened \n", ctime(&now));
+	return 0;
 }
-*/
 
 static void debug_printlog(raft_node *r) {
 	pthread_mutex_lock(&r->mu);
@@ -239,6 +322,13 @@ static size_t raft_timeout(raft_node *r, raft_message out[], size_t out_cap) {
 	r->pstate.currentTerm++;
 	r->pstate.votedFor = r->id;
 
+	// update in logs since it was changed
+	if(persist_term_vote_locked(r)<0){
+		perror("failed to write term/vote to logs");
+		pthread_mutex_unlock(&r->mu);
+		return 0;
+	}
+
 	raft_init_candidate_state(r, r->pstate.currentTerm);
 
 	// debug
@@ -288,9 +378,13 @@ void initialise_raft_sm(raft_node *r, raft_node_id_t id) {
 	// fill the struct with 0 to initialise
 	memset(r, 0, sizeof(*r));
 
+	//set the fd as -1 cause stdin is fd0 lol
+	r->log_file = -1;
+
 	// create the god mutex
 	pthread_mutex_init(&r->mu, NULL);
 
+	// Set all the initial values first
 	// always start as a follower and vote afterwards
 	r->state = FOLLOWER;
 	r->id = id;
@@ -308,7 +402,21 @@ void initialise_raft_sm(raft_node *r, raft_node_id_t id) {
 	r->heartbeat_interval_ms = 50;
 	raft_reset_election_timer(r);
 
-	// need a fd to logfile for this server
+	// open log file if exist
+	// restore pstate
+	// close logs
+	if(restore_pstate(r)==-1){
+		fprintf(stderr, "Failed to failed to restore pstate\n");
+		return;
+	}
+
+	// get fd of existing log or
+	// Create the log file if does not exist
+	if(create_log_file(r)==-1){
+		fprintf(stderr, "Failed to create fd for logfile\n");
+		return;
+	}
+
 }
 
 static void raft_clear_candidate_state(raft_node *r) {
@@ -340,6 +448,7 @@ static void update_term_locked(raft_node *r, raft_term_t newTerm) {
 	raft_clear_leader_state(r);
 
 	raft_reset_election_timer(r);
+
 }
 
 static void update_term(raft_node *r, raft_term_t newTerm) {
@@ -398,13 +507,22 @@ static void ApplyCommitedEnteries_locked(raft_node *r) {
 		LogEntry entry = r->pstate.log[r->vstate.lastApplied - 1];
 
 		// write to log file, on success increment last applied
-		fprintf(r->log_file, "--------------------------------------\n");
-		fprintf(r->log_file, "Index #%" PRIu64 " | Term #%" PRIu64 "\n",
-			entry.index, entry.term);
-		fprintf(r->log_file, "Command type: %d\n", entry.command.type);
-		fprintf(r->log_file, "Room key: %" PRIu64 "\n", entry.command.room_key);
-		fprintf(r->log_file, "Player ID: %" PRIu64 "\n", entry.command.player_id);
-		fprintf(r->log_file, "Player input: %" PRIu32 "\n", entry.command.input);
+		if(dprintf(r->log_file,
+				"ENTRY %" PRIu64
+				" %" PRIu64
+				" %d" 
+				" %" PRIu64
+				" %" PRIu64
+				" %" PRIu32 "\n",
+				entry.index,
+				entry.term,
+				entry.command.type,
+				entry.command.room_key,
+				entry.command.player_id,
+				entry.command.input) < 0){
+			perror("dprintfraft log apply commited entries");
+			return;
+		}
 
 		r->vstate.lastApplied++;
 	}
@@ -603,6 +721,40 @@ RequestVoteResponse HandleRequestVoteRequest(raft_node *r, RequestVoteRequest *r
 	}
 	pthread_mutex_unlock(&r->mu);
 	return resp;
+}
+
+static int persist_term_vote_locked(raft_node *r){
+	// write in log the new term
+	if(dprintf(r->log_file, "TERM %" PRIu64 "\n", r->pstate.currentTerm) < 0)
+		return -1;
+
+	// write in log who this server voted for
+	if(dprintf(r->log_file, "VOTED_FOR %" PRIu64 "\n", r->pstate.votedFor) < 0)
+		return -1;
+
+	return 0;
+}
+
+static int persist_log_entry_locked(raft_node *r, const LogEntry *entry){
+	// apply from memory to file
+	if(dprintf(r->log_file,
+			"ENTRY %" PRIu64
+			" %" PRIu64
+			" %d" 
+			" %" PRIu64
+			" %" PRIu64
+			" %" PRIu32 "\n",
+			entry.index,
+			entry.term,
+			entry.command.type,
+			entry.command.room_key,
+			entry.command.player_id,
+			entry.command.input) < 0){
+		perror("dprintfraft log apply commited entries");
+		return -1;
+	}
+
+	return 0;
 }
 
 int main(void) {

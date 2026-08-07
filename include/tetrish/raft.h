@@ -6,6 +6,7 @@
 #include <stddef.h>
 #include <stdint.h>
 #include <stdint.h>
+#include <errno.h>
 #include <inttypes.h>
 
 // change this later for more peers
@@ -163,8 +164,9 @@ typedef struct raft_node {
 	raft_msec_t latest_heartbeat_ms;
 	raft_msec_t heartbeat_interval_ms;
 
-	// need to have a logfile
-	FILE log_file;
+	// logging
+	// logfile fd
+	int log_file;
 	const char *path_log_file;
 
 	// the hero, mr mutex
