@@ -163,14 +163,15 @@ typedef struct raft_node {
 	raft_msec_t election_timeout_duration_ms;
 	raft_msec_t latest_heartbeat_ms;
 	raft_msec_t heartbeat_interval_ms;
+	raft_msec_t latest_heartbeat_interval_ms;
 
 	// logging
 	// logfile fd
 	int log_file;
-	const char *path_log_file;
 
 	// the hero, mr mutex
 	pthread_mutex_t mu;
+
 } raft_node;
 
 // functions to export

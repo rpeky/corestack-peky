@@ -18,11 +18,13 @@ static void raft_init_candidate_state(raft_node *r, raft_term_t term);
 static void raft_init_leader_state(raft_node *r);
 static void raft_clear_candidate_state(raft_node *r);
 static void raft_clear_leader_state(raft_node *r);
-static void update_term_locked(raft_node *r, raft_term_t newTerm);
+static int update_term_locked(raft_node *r, raft_term_t newTerm);
 static void update_term(raft_node *r, raft_term_t newTerm);
 static void AdvanceCommitIndex_locked(raft_node *r);
 static void ApplyCommitedEnteries_locked(raft_node *r);
-static int persist_term_vote_locked(raft_node *r);
+static int persist_state_locked(raft_node *r);
+static int persist_log_entry_locked(raft_node *r);
+static int persist_truncate_locked(raft_node *r, raft_index_t from);
 
 /*--------------------------Internal prototypes-------------------------------*/
 
@@ -36,7 +38,9 @@ int restore_pstate(raft_node *r){
 	// open log file if it exists
 	char log_path[PATH_MAX];
 
-	snprintf(log_path, sizeof(log_path), "%s/tmp/raft.log", project_root);
+	snprintf(log_path, sizeof(log_path), 
+	  "%s/tmp/raft-%" PRIu64 ".log", project_root, r->id);
+
 	int fd = open(log_path, O_RDONLY); 
 
 	if(fd==-1){
@@ -61,17 +65,31 @@ int restore_pstate(raft_node *r){
 
 	while(fgets(line, sizeof(line), fp)!=0){
 
-		// restore term
 		raft_term_t term;
+		raft_node_id_t voted_for;
 
-		if (sscanf(line, "TERM %" SCNu64, &term) == 1) {
+		// use the STATE keyword in logs to restore term and vote
+		if (sscanf(line, "STATE %" SCNu64 " %" SCNu64, 
+			&term, &voted_for) == 2) {
 			r->pstate.currentTerm = term;
+			r->pstate.votedFor = voted_for;
 			continue;
 		}
-	
-		// restore voted for
-		if (sscanf(line, "VOTED_FOR %" SCNu64, &voted_for) == 1) {
-			r->pstate.votedFor = voted_for;
+		
+		// log truncation behaviour
+		raft_index_t truncate;
+
+		// check if log is compacted and skip
+		if(sscanf(line, "TRUNCATE %" SCNu64, &truncate)==1){
+			if(truncate == 0){
+				fprintf(stderr, "invalid TRUNCATE index\n");
+				fclose(fp);
+				return -1;
+			}
+			
+			if(truncate <= r->pstate.log_len + 1)
+				r->pstate.log_len = (size_t)(truncate-1);
+
 			continue;
 		}
 
@@ -97,7 +115,11 @@ int restore_pstate(raft_node *r){
 
 		if(matched!=6) continue;
 
-		entry.command.type = (core_cmd_type)command_type;
+		if(entry.index != r->pstate.log_len + 1){
+			fprintf(stderr, "restore pstate: index mismatch\n");
+			fclose(fp);
+			return -1;
+		}
 
 		if(r->pstate.log_len >= RAFT_LOG_CAP){
 			fprintf(stderr, "restore pstate: exceeded log capacity\n");
@@ -105,8 +127,10 @@ int restore_pstate(raft_node *r){
 			return -1;
 		}
 
-		r->pstate.log[r->pstate.log_len] = entry;
-		r->pstate.log_len++;
+		entry.command.type = (core_cmd_type)command_type;
+
+		// set the entry back into memory and increment tracker
+		r->pstate.log[r->pstate.log_len++] = entry;
 	}
 
 	fclose(fp);
@@ -117,7 +141,9 @@ int restore_pstate(raft_node *r){
 int create_log_file(raft_node *r) {
 	char log_path[PATH_MAX];
 
-	snprintf(log_path, sizeof(log_path), "%s/tmp/raft.log", project_root);
+	// make sure each log has its id in case multiple tetrisd run on the same machine
+	snprintf(log_path, sizeof(log_path), "%s/tmp/raft-%" PRIu64 ".log", 
+		project_rootn r->id);
 
 	r->log_file = open(log_path, O_WRONLY | O_CREAT | O_APPEND, 0644);
 
@@ -126,10 +152,6 @@ int create_log_file(raft_node *r) {
 		return -1;
 	}
 
-	time_t now = time(NULL);
-	dprintf(r->log_file, "=================================\n");
-	dprintf(r->log_file, "[%s] Log file opened \n", ctime(&now));
-	return 0;
 }
 
 static void debug_printlog(raft_node *r) {
@@ -323,7 +345,7 @@ static size_t raft_timeout(raft_node *r, raft_message out[], size_t out_cap) {
 	r->pstate.votedFor = r->id;
 
 	// update in logs since it was changed
-	if(persist_term_vote_locked(r)<0){
+	if(persist_state_locked(r)<0){
 		perror("failed to write term/vote to logs");
 		pthread_mutex_unlock(&r->mu);
 		return 0;
@@ -428,9 +450,9 @@ static void raft_clear_leader_state(raft_node *r) {
 }
 
 // to use if mutex is already in place
-static void update_term_locked(raft_node *r, raft_term_t newTerm) {
+static int update_term_locked(raft_node *r, raft_term_t newTerm) {
 	if (newTerm <= r->pstate.currentTerm) {
-		return;
+		return 0;
 	}
 
 	// reset state to follower, current node is out of sync and behind
@@ -442,6 +464,12 @@ static void update_term_locked(raft_node *r, raft_term_t newTerm) {
 	r->pstate.currentTerm = newTerm;
 	r->pstate.votedFor = RAFT_NONE;
 	r->leader_id = RAFT_NONE;
+	
+	// write to file, if not the server should have failed
+	if(persist_state_locked(r) < 0){
+		r->state = FAILED;
+		return -1;
+	}
 
 	// zero cstate and lstate
 	raft_clear_candidate_state(r);
@@ -449,6 +477,7 @@ static void update_term_locked(raft_node *r, raft_term_t newTerm) {
 
 	raft_reset_election_timer(r);
 
+	return 0;
 }
 
 static void update_term(raft_node *r, raft_term_t newTerm) {
@@ -490,16 +519,14 @@ static void AdvanceCommitIndex_locked(raft_node *r) {
 		if (track >= majority(clustersize)) {
 			r->vstate.commitIndex = n;
 			return;
-		} else {
-			// otherwise, this is the highest majority value
-			break;
-		}
+		} 
 	}
 
 	return;
 }
 
 // this function runs while muxtex is locked
+/*
 static void ApplyCommitedEnteries_locked(raft_node *r) {
 	// update last applied after logging
 	while (r->vstate.lastApplied < r->vstate.commitIndex) {
@@ -508,18 +535,18 @@ static void ApplyCommitedEnteries_locked(raft_node *r) {
 
 		// write to log file, on success increment last applied
 		if(dprintf(r->log_file,
-				"ENTRY %" PRIu64
-				" %" PRIu64
-				" %d" 
-				" %" PRIu64
-				" %" PRIu64
-				" %" PRIu32 "\n",
-				entry.index,
-				entry.term,
-				entry.command.type,
-				entry.command.room_key,
-				entry.command.player_id,
-				entry.command.input) < 0){
+	     "ENTRY %" PRIu64
+	     " %" PRIu64
+	     " %d" 
+	     " %" PRIu64
+	     " %" PRIu64
+	     " %" PRIu32 "\n",
+	     entry.index,
+	     entry.term,
+	     entry.command.type,
+	     entry.command.room_key,
+	     entry.command.player_id,
+	     entry.command.input) < 0){
 			perror("dprintfraft log apply commited entries");
 			return;
 		}
@@ -527,9 +554,28 @@ static void ApplyCommitedEnteries_locked(raft_node *r) {
 		r->vstate.lastApplied++;
 	}
 }
+*/
+
+size_t raft_commit_entry(raft_node *r, LogEntry out[], size_t out_cap){
+	if(r==NULL || out==NULL) return 0;
+
+	pthread_mutex_lock(&r->mu);
+
+	size_t count = 0;
+
+	while(r->vstate.lastApplied < r->vstate.commitIndex &&
+		count < out_cap) {
+		// lastApplied = n == log[n]
+		out[count++] = r->pstate.log[r->vstate.lastApplied++];
+	}
+	
+	pthread_mutex_unlock(&r->mu);
+	return count;
+}
 
 // used by leader to replicate log entries using leder data
 // is also a kind of heartbeat
+/*
 void AppendEntries(raft_node *r, size_t peer_idx) {
 	// safety check, only leader should call this function
 	if (r->state != LEADER)
@@ -579,21 +625,80 @@ void AppendEntries(raft_node *r, size_t peer_idx) {
 
 	// send the appendentryreq *req payload to peer after unlock
 }
+*/
+
+bool raft_append_entries(raft_node *r, size_t peer_idx, AppendEntriesRequest *req){
+	if(r==NULL || req==NULL) return false;
+
+	pthread_mutex_lock(&r->mu);
+
+	if(r->state != LEADER || 
+		peer_idx >= r->peer_count){
+		pthread_mutex_unlock(&r->mu);
+		return false;
+	}
+
+	raft_index_t nextIdx = r->lstate.next_index[peer_idx];
+	raft_index_t prevLogIdx = nextIdx - 1;
+
+	raft_term_t prevLogTerm = 0;
+	if(prevLogIdx>0){
+		prevLogTerm = r->pstate.log[prevLogIdx - 1].term;
+	}
+
+	size_t entryCount = 0;
+
+	if(nextIdx <= r->pstate.log_len){
+		size_t available =
+			r->pstate.log_len -
+			(size_t)nextIdx + 1;
+
+		entryCount =
+			available < RAFT_APPEND_BATCH
+			? available
+			: RAFT_APPEND_BATCH;
+	}
+
+	*req = (AppendEntriesRequest) {
+		.term = r->pstate.currentTerm,
+		.leaderId = r->id,
+		.prevLogIndex = prevLogIdx,
+		.prevLogTerm = prevLogTerm,
+		.leaderCommit = r->vstate.commitIndex,
+		.log_len = entryCount,
+	};
+
+	// offset and copy over the logs from pstate to the req struct to send
+	for(size_t i = 0; i<entryCount; ++i){
+		size_t pos = (size_t)(nextIdx - 1) + i;
+		req->log[i] = r->pstate.log[pos]
+	}
+
+	pthread_mutex_unlock(&r->mu);
+	return true;
+}
 
 AppendEntriesResponse HandleAppendEntriesRequest(raft_node *r, AppendEntriesRequest *req) {
 	// default to fail message
 	AppendEntriesResponse resp = {
-		.term = r->pstate.currentTerm,
+		.term = 0,
 		.success = false,
+		.matchIndex = 0,
 	};
 
 	// send response
 
+	if(r==NULL || req==NULL){
+		return resp;
+	}
+
 	pthread_mutex_lock(&r->mu);
+
+	resp.term = r->pstate.currentTerm;
 
 	// mismatched term - 5.1, return fail if lower
 	// release lock and return
-	// if a leader receives this, it means that it is lagging behind
+	// if a leader receives this, it means that it is lagging behind [stale]
 	if (req->term < r->pstate.currentTerm) {
 		pthread_mutex_unlock(&r->mu);
 		return resp;
@@ -601,7 +706,10 @@ AppendEntriesResponse HandleAppendEntriesRequest(raft_node *r, AppendEntriesRequ
 
 	// run update term if larger, if leader demote
 	if (req->term > r->pstate.currentTerm) {
-		update_term_locked(r, req->term);
+		if(update_term_locked(r, req->term) < 0){
+			pthread_mutex_unlock(&r->mu);
+			return resp;
+		}
 	}
 
 	// term is valid, send back a response timestamped to current term
@@ -617,6 +725,78 @@ AppendEntriesResponse HandleAppendEntriesRequest(raft_node *r, AppendEntriesRequ
 	// update state machine fields
 	r->leader_id = req->leaderId;
 	r->latest_heartbeat_ms = raft_now_msec();
+
+	raft_reset_election_timer(r);
+
+	// leader wants someting beyond the current logs
+	if(req->prevLogIndex > r->pstate.log_len){
+		pthread_mutex_unlock(&r->mu);
+		return resp;
+	}
+
+	// try to match term
+	if(req->prevLogIndex > 0){
+		LogEntry *prev = &r->pstate.log[req->prevLogIndex - 1];
+		if(prev->term != req->prevLogTerm){
+			pthread_mutex_unlock(&r->mu);
+			return resp;
+		}
+	}
+
+	// process inbound entries
+	for(size_t i=0; i<req->log_len;++i){
+		LogEntry incoming = req->log[i];
+
+		raft_index_t expected = req->prevLogIndex + i + 1;
+
+		if(incoming.index != expected){
+			pthread_mutex_unlock(&r->mu);
+			return resp;
+		}
+
+		size_t pos = (size_t)(incoming.index - 1);
+
+		// if entry already exists
+		if(pos < r->pstate.log_len){
+			if(r->pstate.log[pos].term == incoming.term) continue;
+
+			// conflicting case
+			// just delete from this point on, leader appendrpc will
+			// fix the state later
+			if(persist_truncate_locked(r, incoming.index) < 0){
+				// fail the state machine
+				r->state=FAILED;
+				pthread_mutex_unlock(&r->mu);
+				return resp;
+			}
+
+			r->pstate.log_len = pos;
+		}
+
+		// if exceed fater restore
+		if(r->pstate.log_len >= RAFT_LOG_CAP){
+			pthread_mutex_unlock(&r->mu);
+			return resp;
+		}
+
+		if(persist_log_entry_locked(r, &incoming) < 0){
+			r->state=FAILED;
+			pthread_mutex_unlock(&r->mu);
+			return resp;
+		}
+
+		r->pstate.log[r->pstate.log_len++] = incoming;
+	}
+
+	// learn commit position from leader
+	if(req->leaderCommit > r->vstate.commitIndex){
+		raft_index_t last = raft_last_log_index(r);
+		r->vstate.commitIndex = req->leaderCommit < last ?
+		req->leaderCommit : last;
+	}
+
+	resp.success = true;
+	resp.matchIndex = req->prevLogIndex + req->log_len;
 
 	pthread_mutex_unlock(&r->mu);
 	return resp;
@@ -653,14 +833,12 @@ void HandleAppendEntriesResponse(raft_node *r, AppendEntriesResponse *resp, raft
 
 	// if successful, check if leader is behind, otherwise update lstate
 	if (resp->success) {
-		if (r->lstate.next_index[peer_idx] <= r->pstate.log_len) {
-			r->lstate.match_index[peer_idx] = r->lstate.next_index[peer];
-			r->lstate.next_index[peer_idx]++;
+		if (r->lstate.next_index[peer_idx] < resp->matchIndex) {
+			r->lstate.match_index[peer_idx] = resp->matchIndex;
+			r->lstate.next_index[peer_idx] = resp->matchIndex+1;
 		}
 
-		// commit index, apply commited index, return
 		AdvanceCommitIndex_locked(r);
-		ApplyCommitedEnteries_locked(r);
 
 		pthread_mutex_unlock(&r->mu);
 		return;
@@ -671,7 +849,7 @@ void HandleAppendEntriesResponse(raft_node *r, AppendEntriesResponse *resp, raft
 	// at worse it will hit zero and do a full overwrite for the logs
 	if (r->lstate.next_index[peer_idx] > 1)
 		r->lstate.next_index[peer_idx]--;
-	AppendEntries(r, peer);
+
 	pthread_mutex_unlock(&r->mu);
 	return;
 }
@@ -712,25 +890,99 @@ RequestVoteResponse HandleRequestVoteRequest(raft_node *r, RequestVoteRequest *r
 	// vote for candidate if able to
 	if ((r->pstate.votedFor == RAFT_NONE ||
 		r->pstate.votedFor == req->candidateId) &&
-		checkLog(req->lastLogIndex, req->lastLogTerm,
-	   raft_last_log_index(r), raft_last_log_term(r))) {
+		checkLog(req->lastLogIndex, 
+			req->lastLogTerm,
+			raft_last_log_index(r), 
+			raft_last_log_term(r))) {
 
 		r->pstate.votedFor = req->candidateId;
-		r->latest_heartbeat_ms = raft_now_msec();
+		
+		// commit term and who server voted for
+		// if fail set server to fail
+		// commit incase server fails during voting and restores afterwards from logs
+		if(persist_state_locked(r) < 0){
+			r->state = FAILED;
+			pthread_mutex_unlock(&r->mu);
+			return resp;
+		}
+
+		// reset timer
+		raft_reset_election_timer(r);
 		resp.voteGranted = true;
 	}
 	pthread_mutex_unlock(&r->mu);
 	return resp;
 }
 
-static int persist_term_vote_locked(raft_node *r){
-	// write in log the new term
-	if(dprintf(r->log_file, "TERM %" PRIu64 "\n", r->pstate.currentTerm) < 0)
+void HandleRequestVoteResponse(raft_node *r, RequestVoteResponse *resp, raft_node_id_t peer){
+	if(r==NULL || resp==NULL) return;
+
+	pthread_mutex_lock(&r->mu);
+
+	// check term, leader should reset if outdated
+	if (resp->term > r->pstate.currentTerm) {
+		update_term_locked(r, resp->term);
+		pthread_mutex_unlock(&r->mu);
+		return;
+	}
+	
+	// response is irrelevant if not a candidate or outdated
+	if(r->state != CANDIDATE || 
+		resp->term != r->pstate.currentTerm ||
+		resp->term != r->cstate.electionterm){
+
+		pthread_mutex_unlock(&r->mu);
+		return;
+	}
+
+	size_t peer_idx = find_peer_idx(r, peer);
+
+	// RAFT_NONE case
+	if(peer_idx == SIZE_MAX){
+		pthread_mutex_unlock(&r->mu);
+		return;
+	}
+
+	// prevent duplicate response
+	if(r->cstate.votes_responded[peer_idx]){
+		pthread_mutex_unlock(&r->mu);
+		return;
+	}
+
+	r->cstate.votes_responded[peer_idx] = true;
+	r->cstate.votes_granted[peer_idx] = resp->voteGranted;
+
+	//self vote
+	size_t votes = 1;
+
+	// count
+	for(size_t i=0; i<r->peer_count;++i){
+		if(r->cstate.votes_granted[i]) votes++;
+	}
+
+	// check vote count vs majority
+	if (votes >= majority(r->peer_count + 1)){
+		// cool you won the election
+		raft_init_leader_state(r);
+
+		// send a heartbeat as leader
+		r->latest_heartbeat_ms = 0;
+	}
+
+	pthread_mutex_unlock(&r->mu);
+}
+
+static int persist_state_locked(raft_node *r){
+	// write in log the new term as a state
+	if(dprintf(r->log_file, "STATE %" PRIu64 " %" PRIu64 "\n", 
+	    r->pstate.currentTerm, r->pstate.votedFor) < 0)
 		return -1;
 
-	// write in log who this server voted for
-	if(dprintf(r->log_file, "VOTED_FOR %" PRIu64 "\n", r->pstate.votedFor) < 0)
+	// make sure logfile in actual storage is up to date
+	if(fdatasync(r->log_file) == -1){
+		perror("fdatasync raft state to logs");
 		return -1;
+	}
 
 	return 0;
 }
@@ -738,25 +990,87 @@ static int persist_term_vote_locked(raft_node *r){
 static int persist_log_entry_locked(raft_node *r, const LogEntry *entry){
 	// apply from memory to file
 	if(dprintf(r->log_file,
-			"ENTRY %" PRIu64
-			" %" PRIu64
-			" %d" 
-			" %" PRIu64
-			" %" PRIu64
-			" %" PRIu32 "\n",
-			entry.index,
-			entry.term,
-			entry.command.type,
-			entry.command.room_key,
-			entry.command.player_id,
-			entry.command.input) < 0){
+	    "ENTRY %" PRIu64
+	    " %" PRIu64
+	    " %d" 
+	    " %" PRIu64
+	    " %" PRIu64
+	    " %" PRIu32 "\n",
+	    entry.index,
+	    entry.term,
+	    entry.command.type,
+	    entry.command.room_key,
+	    entry.command.player_id,
+	    entry.command.input) < 0){
 		perror("dprintfraft log apply commited entries");
+		return -1;
+	}
+
+	// make sure logfile in actual storage is up to date
+	if(fdatasync(r->log_file) == -1){
+		perror("fdatasync raft entry to logs");
 		return -1;
 	}
 
 	return 0;
 }
 
+static int persist_truncate_locked(raft_node *r, raft_index_t from){
+	if(dprintf(r->log_file, "TRUNCATE %" PRIu64 "\n", from) < 0)
+		return -1;
+
+	// make sure logfile in actual storage is up to date
+	if(fdatasync(r->log_file) == -1){
+		perror("fdatasync raft log truncate to logs");
+		return -1;
+	}
+
+	return 0;
+
+}
+
+int raft_leader_send_command(raft_node *r, const client_command *command){
+	if(r==NULL || command==NULL) return -1;
+
+	pthread_mutex_lock(&r->mu);
+
+	// only leader should be able to run
+	if(r->state!=LEADER){
+		pthread_mutex_unlock(&r->mu);
+		return -1;
+	}
+
+	// should run compaction
+	if(r->pstate.log_len >= RAFT_LOG_CAP){
+		pthread_mutex_unlock(&r->mu);
+		return -1;
+	}
+
+	LogEntry entry = {
+		.index = raft_last_log_index(r) + 1,
+		.term = r->pstate.currentTerm,
+		.command = *command,
+	};
+
+	// persist in storage log
+	// fail if operation fails
+	if(persist_log_entry_locked(r, &entry) < 0){
+		r->state = FAILED;
+		pthread_mutex_unlock(&r->mu);
+		return -1;
+	}
+
+	r->pstate.log[r->pstate.log_len++] = entry;
+
+	// edge case for single server
+	if(majority(r->peer_count + 1)==1) r->vstate.commitIndex = entry.index;
+
+	pthread_mutex_unlock(&r->mu);
+	return 0;
+}
+
+
+/*
 int main(void) {
 	printf("test raft\n");
 	// initialise a raft server
@@ -764,3 +1078,4 @@ int main(void) {
 	initialise_raft_sm(&r, 0);
 	return 0;
 }
+*/

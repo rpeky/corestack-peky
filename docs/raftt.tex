@@ -2,3 +2,9 @@
 For now we forego the in memory biffer for the uncommiteds logs to simplify the iplementation.
 Most likely I will have to create a new file to write uncommited logs to make them persistenta and use it like a queue structure.
 After a crash then i would be able to eithe directly use the file by itself or to write it back to memory,
+
+Raft log entry should have some keywords to make restoring them into memory easier
+They should appear as the first word in each entry value
+STATE
+ENTRY
+TRUNCATE
